@@ -1,0 +1,32 @@
+# ── Large generated data — too big for git (>100MB) ──────────────────────────
+chroma_db/
+kb/Search_queries_world.json
+kb/Search_queries_world_v1_cities_only.json
+kb/outputs/documents_embedding.jsonl
+kb/outputs/documents_full.json
+kb/outputs/documents_vectorstore.jsonl
+kb/index.faiss
+kb/records.json
+kb/geodata/allCountries.txt
+kb/geodata/cities15000.txt
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Session backups ───────────────────────────────────────────────────────────
+SESSION_STATE_backup_*.md

@@ -1,0 +1,7 @@
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+numpy>=1.26.0
+requests>=2.32.0
+dateparser>=1.2.0
+geopy>=2.4.0
+pydantic>=2.7.0
