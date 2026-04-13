@@ -281,22 +281,31 @@ _COUNTRY_ALIASES = {
 }
 
 
-def _extract_country(text: str) -> Optional[str]:
-    """Return the normalised country name found in text, or None.
+def _extract_countries(text: str) -> list:
+    """Return all normalised country names found in text (may be empty).
 
-    Checks aliases first (short tokens like 'uk', 'usa'), then full names
-    (longest-first so 'united kingdom' beats 'united').
+    Used when the user mentions multiple countries: 'france and germany'.
     """
     t = text.lower()
-    # Aliases — word-boundary check to avoid false matches (e.g. 'american')
+    found = []
+    seen  = set()
+    # Aliases first
     for alias, canonical in _COUNTRY_ALIASES.items():
-        if re.search(r'\b' + re.escape(alias) + r'\b', t):
-            return canonical
-    # Full names — longest first
+        if canonical not in seen and re.search(r'\b' + re.escape(alias) + r'\b', t):
+            found.append(canonical)
+            seen.add(canonical)
+    # Full names — longest first to avoid 'united' matching before 'united kingdom'
     for name in sorted(COUNTRY_NAMES, key=len, reverse=True):
-        if name in t:
-            return name
-    return None
+        if name not in seen and name in t:
+            found.append(name)
+            seen.add(name)
+    return found
+
+
+def _extract_country(text: str) -> Optional[str]:
+    """Return the first normalised country name found in text, or None."""
+    result = _extract_countries(text)
+    return result[0] if result else None
 
 
 def _last_day(year: int, month: int) -> int:
@@ -469,13 +478,15 @@ def parse_intent(question: str) -> dict:
                 break
 
     date_start, date_end = _parse_dates(question)
-    country = _extract_country(question)
+    countries = _extract_countries(question)
+    country   = countries[0] if countries else None   # kept for backward compat
 
     return {
         "satellite":  satellite,
         "date_start": date_start,
         "date_end":   date_end,
-        "country":    country,
+        "country":    country,      # first country (used for display / clarification)
+        "countries":  countries,    # full list (used for ChromaDB $or filter)
     }
 
 
@@ -496,10 +507,17 @@ def _sat_clause(intent: dict) -> list:
 
 
 def _hard_clauses(intent: dict) -> list:
-    """Return satellite + country $eq clauses (both optional)."""
+    """Return satellite + country filter clauses (both optional).
+
+    Single country  → {"country": {"$eq": "france"}}
+    Multiple countries → {"$or": [{"country": {"$eq": "france"}}, {"country": {"$eq": "germany"}}]}
+    """
     clauses = _sat_clause(intent)
-    if intent.get("country"):
-        clauses.append({"country": {"$eq": intent["country"]}})
+    countries = intent.get("countries") or ([intent["country"]] if intent.get("country") else [])
+    if len(countries) == 1:
+        clauses.append({"country": {"$eq": countries[0]}})
+    elif len(countries) > 1:
+        clauses.append({"$or": [{"country": {"$eq": c}} for c in countries]})
     return clauses
 
 
@@ -823,6 +841,10 @@ def _is_refinement(text: str, last_results: dict) -> bool:
 
     # "show me more partial" / "give me the exact" etc. → always reuse
     if any(phrase in t for phrase in _MORE_PHRASES):
+        return True
+
+    # "give me 5 more", "show 10 more for france", "5 more exact" etc.
+    if re.search(r'\d+\s+more\b|\bmore\s+\d+|\bmore\s+for\b', t):
         return True
 
     # Explicit new topic → new search
