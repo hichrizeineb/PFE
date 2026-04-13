@@ -24,6 +24,7 @@ import re
 import sys
 from calendar import monthrange
 from datetime import datetime
+from difflib import get_close_matches
 from typing import Optional
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -58,21 +59,119 @@ TEMPERATURE     = 0.1
 
 # Explicit satellite codes — checked first (highest priority)
 SATELLITE_CODES = {
+    # with dash
     "sentinel-5p": "S5P", "sentinel5p": "S5P",
-    "sentinel-1": "S1",   "sentinel1":  "S1",
-    "sentinel-2": "S2",   "sentinel2":  "S2",
-    "sentinel-3": "S3",   "sentinel3":  "S3",
+    "sentinel-5":  "S5P", "sentinel5":  "S5P",   # official mission name
+    "sentinel-1":  "S1",  "sentinel1":  "S1",
+    "sentinel-2":  "S2",  "sentinel2":  "S2",
+    "sentinel-3":  "S3",  "sentinel3":  "S3",
+    # with space (e.g. "sentinel 2")
+    "sentinel 5p": "S5P",
+    "sentinel 5":  "S5P",
+    "sentinel 1":  "S1",
+    "sentinel 2":  "S2",
+    "sentinel 3":  "S3",
+    # short codes
     "s5p": "S5P",
+    "s5":  "S5P",
     "s1":  "S1",
     "s2":  "S2",
     "s3":  "S3",
 }
 
-# Mission-type synonyms — checked only if no explicit code found
+# Mission-type synonyms — based on official Copernicus mission descriptions.
+# Checked only if no explicit code found in SATELLITE_CODES above.
 SATELLITE_MISSION_SYNONYMS = {
-    "synthetic aperture": "S1", "sar": "S1", "radar": "S1",
-    "multispectral": "S2", "optical": "S2",
-    "atmospheric": "S5P", "air quality": "S5P", "no2": "S5P", "pollution": "S5P",
+    # ── S1 — All-weather radar Earth observation ──────────────────────────────
+    # S1 uses SAR (Synthetic Aperture Radar): works day/night, through clouds.
+    # Primary applications: floods, maritime, sea ice, land deformation.
+    "sar":               "S1",
+    "radar":             "S1",
+    "synthetic aperture":"S1",
+    "backscatter":       "S1",
+    "all-weather":       "S1",
+    "flood":             "S1",   # flood mapping works through clouds
+    "floods":            "S1",
+    "maritime":          "S1",   # ship and vessel detection
+    "ships":             "S1",
+    "sea ice":           "S1",   # ice extent and drift
+    "deformation":       "S1",   # ground/surface deformation (InSAR)
+    "subsidence":        "S1",   # land subsidence
+    "landslide":         "S1",
+    "landslides":        "S1",
+    "disaster":          "S1",   # disaster response (radar unblocked by clouds)
+
+    # ── S2 — High-resolution optical land monitoring ──────────────────────────
+    # S2 is a 13-band multispectral imager. Needs sunlight and clear sky.
+    # Primary applications: vegetation, agriculture, land cover, emergency.
+    "optical":           "S2",
+    "multispectral":     "S2",
+    "high-resolution":   "S2",
+    "high resolution":   "S2",
+    "vegetation":        "S2",   # crop health, NDVI, land cover
+    "agriculture":       "S2",
+    "crops":             "S2",
+    "soil":              "S2",
+    "land cover":        "S2",
+    "forest":            "S2",
+    "forests":           "S2",
+    "wildfire":          "S2",
+    "fire":              "S2",   # burn scar and active fire mapping
+    "inland waterways":  "S2",
+    "water cover":       "S2",
+    "emergency mapping": "S2",
+    "emergency":         "S2",
+
+    # ── S3 — Marine and land physical measurements ────────────────────────────
+    # S3 combines optical, radar altimetry instruments.
+    # Primary: sea-surface topography, temperature, ocean colour, land colour.
+    "marine":                    "S3",
+    "oceanography":              "S3",
+    "ocean colour":              "S3",   # British spelling (Copernicus official)
+    "ocean color":               "S3",   # American spelling
+    "ocean monitoring":          "S3",
+    "sea surface":               "S3",
+    "sea surface temperature":   "S3",
+    "sea level":                 "S3",
+    "sea-surface topography":    "S3",
+    "altimetry":                 "S3",
+    "land surface temperature":  "S3",
+    "land colour":               "S3",
+    "land color":                "S3",
+    "vegetation index":          "S3",   # global-scale NDVI (coarse resolution)
+    "climate":                   "S3",
+
+    # ── S5P — Atmospheric composition monitoring ──────────────────────────────
+    # S5P (Sentinel-5 Precursor) maps trace gases and aerosols daily.
+    # Measures: NO2, SO2, CO, O3, CH4, HCHO, aerosol optical depth.
+    "atmosphere":           "S5P",
+    "atmospheric":          "S5P",
+    "atmospheric composition": "S5P",
+    "air quality":          "S5P",
+    "pollution":            "S5P",
+    "trace gas":            "S5P",
+    "trace gases":          "S5P",
+    "no2":                  "S5P",   # nitrogen dioxide
+    "nitrogen dioxide":     "S5P",
+    "so2":                  "S5P",   # sulphur dioxide
+    "sulphur dioxide":      "S5P",
+    "sulfur dioxide":       "S5P",
+    "co":                   "S5P",   # carbon monoxide (NOTE: short — only exact match)
+    "carbon monoxide":      "S5P",
+    "co2":                  "S5P",   # carbon dioxide
+    "carbon dioxide":       "S5P",
+    "methane":              "S5P",
+    "ch4":                  "S5P",
+    "ozone":                "S5P",
+    "formaldehyde":         "S5P",
+    "hcho":                 "S5P",
+    "aerosol optical":      "S5P",   # longer key checked before "optical" → S2
+    "optical depth":        "S5P",
+    "aerosol":              "S5P",
+    "aerosols":             "S5P",
+    "greenhouse":           "S5P",
+    "emission":             "S5P",
+    "emissions":            "S5P",
 }
 
 MONTH_MAP = {
@@ -342,8 +441,10 @@ def parse_intent(question: str) -> dict:
     """
     q = question.lower()
 
-    # Satellite — two passes: explicit codes first, mission synonyms as fallback.
-    # This ensures "S2 radar imaging" → S2 (not S1 via "radar").
+    # Satellite — three passes:
+    # 1. Exact codes (highest priority)
+    # 2. Mission-type synonyms
+    # 3. Fuzzy match against satellite codes (catches typos like "sentinal-2")
     satellite = None
     for kw in sorted(SATELLITE_CODES, key=len, reverse=True):
         if kw in q:
@@ -353,6 +454,18 @@ def parse_intent(question: str) -> dict:
         for kw in sorted(SATELLITE_MISSION_SYNONYMS, key=len, reverse=True):
             if kw in q:
                 satellite = SATELLITE_MISSION_SYNONYMS[kw]
+                break
+    if satellite is None:
+        # Fuzzy pass — try each word (and bigram) against long SATELLITE_CODES keys
+        _long_codes = [k for k in SATELLITE_CODES if len(k) >= 6]
+        _words = q.split()
+        _candidates = _words + [f"{_words[i]} {_words[i+1]}" for i in range(len(_words) - 1)]
+        for cand in _candidates:
+            if len(cand) < 4:
+                continue
+            hits = get_close_matches(cand, _long_codes, n=1, cutoff=0.82)
+            if hits:
+                satellite = SATELLITE_CODES[hits[0]]
                 break
 
     date_start, date_end = _parse_dates(question)
@@ -430,78 +543,121 @@ def _overlap_where_clause(intent: dict) -> Optional[dict]:
 
 
 def _needs_clarification(intent: dict, question: str) -> Optional[str]:
-    """Return a focused follow-up question when the intent is ambiguous.
+    """Return a combined follow-up question covering ALL missing/ambiguous fields.
 
-    Rules (checked in priority order):
-    1. Ambiguous city name (e.g. London UK vs Canada) — must be first so it
-       isn't swallowed by the no-geo rule below.
-    2. Multi-month range with no geo → ask for location scope.
-    3. Optical (S2) + specific date window ≤180 days + no cloud preference.
+    ALL rules are evaluated every time — none short-circuits the others.
+    Questions are collected into a list and returned as one message so the
+    user can answer everything in a single reply.
 
-    Returns a follow-up string, or None if no clarification is needed.
+    Rules:
+    R1 — Ambiguous city name (e.g. London UK vs Canada).
+    R2 — No satellite specified.
+    R3 — No location specified.
+    R4 — No time period specified.
+    R5 — Multi-month range with no location (replaces/merges with R3 when dates exist).
+
+    Returns a combined question string, or None if nothing is missing.
     """
     q_lower = question.lower()
     ds, de  = intent.get("date_start"), intent.get("date_end")
     country = intent.get("country")
     sat     = intent.get("satellite")
 
-    # Rule 0 — too vague: satellite or generic keyword but no date AND no location
     _GEO_ANCHOR = {
         "italy", "france", "germany", "spain", "uk", "united kingdom", "europe",
         "amazon", "africa", "asia", "mediterranean", "sahara", "arctic",
         "worldwide", "global", "all", "everywhere", "any", "forest", "ocean",
         "desert", "mountain", "urban", "coast",
     }
-    if sat and not ds and not country and not any(w in q_lower for w in _GEO_ANCHOR):
-        return (
-            f"I can search {sat} data — when and where? "
-            "(e.g. 'France in March 2025', 'Amazon basin 2024', or 'all regions 2025')"
+
+    AMBIGUOUS = {
+        "london":      "London, UK or London, Ontario (Canada)?",
+        "cambridge":   "Cambridge, UK or Cambridge, Massachusetts (USA)?",
+        "richmond":    "Richmond, UK or Richmond, Virginia (USA)?",
+        "victoria":    "Victoria, BC (Canada), Victoria (Australia), or Lake Victoria (Africa)?",
+        "adelaide":    "Adelaide, Australia or Adelaide, South Africa?",
+        "hamilton":    "Hamilton, New Zealand or Hamilton, Ontario (Canada)?",
+        "birmingham":  "Birmingham, UK or Birmingham, Alabama (USA)?",
+        "springfield": "Springfield, Illinois, Springfield, Missouri, or another US Springfield?",
+        "portland":    "Portland, Oregon or Portland, Maine (USA)?",
+        "memphis":     "Memphis, Tennessee (USA) or Memphis, Egypt (ancient site)?",
+        "kingston":    "Kingston, Jamaica or Kingston, Ontario (Canada)?",
+        "georgetown":  "Georgetown, Guyana or Georgetown, Washington D.C. (USA)?",
+        "wellington":  "Wellington, New Zealand or Wellington, South Africa?",
+        "perth":       "Perth, Australia or Perth, Scotland (UK)?",
+        "newcastle":   "Newcastle, UK or Newcastle, New South Wales (Australia)?",
+        "plymouth":    "Plymouth, UK or Plymouth, Massachusetts (USA)?",
+        "albany":      "Albany, New York (USA) or Albany, Western Australia?",
+        "aurora":      "Aurora, Colorado (USA) or Aurora, Ontario (Canada)?",
+    }
+
+    # Fuzzy match each word in the query against known geo anchors and city names
+    # so typos like "meditarranean" still count as a location (cutoff=0.82)
+    _all_geo = list(_GEO_ANCHOR) + list(AMBIGUOUS.keys())
+    _fuzzy_location = any(
+        get_close_matches(w, _all_geo, n=1, cutoff=0.82)
+        for w in q_lower.split()
+        if len(w) >= 4
+    )
+    has_location = bool(country) or any(w in q_lower for w in _GEO_ANCHOR) or \
+                   any(city in q_lower for city in AMBIGUOUS) or _fuzzy_location
+
+    questions = []
+
+    # R1 — ambiguous city: ask which one is meant
+    if not country:
+        for city, choices in AMBIGUOUS.items():
+            if city in q_lower:
+                questions.append(f"  • Which {city.capitalize()} did you mean? {choices}")
+                break  # only one city ambiguity at a time
+
+    # R2 — no satellite specified
+    if not sat:
+        questions.append(
+            "  • Which satellite? "
+            "(S1 = radar/SAR · S2 = optical/multispectral · S3 = ocean & land · S5P = atmosphere)"
         )
 
-    # Rule 1 — ambiguous city names (checked FIRST)
-    AMBIGUOUS = {
-        "london":      "Did you mean London, UK or London, Ontario (Canada)?",
-        "cambridge":   "Did you mean Cambridge, UK or Cambridge, Massachusetts (USA)?",
-        "richmond":    "Did you mean Richmond, UK or Richmond, Virginia (USA)?",
-        "victoria":    "Did you mean Victoria, BC (Canada), Victoria (Australia), or Lake Victoria (Africa)?",
-        "adelaide":    "Did you mean Adelaide, Australia or Adelaide, South Africa?",
-        "hamilton":    "Did you mean Hamilton, New Zealand or Hamilton, Ontario (Canada)?",
-        "birmingham":  "Did you mean Birmingham, UK or Birmingham, Alabama (USA)?",
-        "springfield": "Did you mean Springfield, Illinois, Springfield, Missouri, or another US Springfield?",
-        "portland":    "Did you mean Portland, Oregon or Portland, Maine (USA)?",
-        "memphis":     "Did you mean Memphis, Tennessee (USA) or Memphis, Egypt (ancient site)?",
-        "kingston":    "Did you mean Kingston, Jamaica or Kingston, Ontario (Canada)?",
-        "georgetown":  "Did you mean Georgetown, Guyana or Georgetown, Washington D.C. (USA)?",
-        "wellington":  "Did you mean Wellington, New Zealand or Wellington, South Africa?",
-        "perth":       "Did you mean Perth, Australia or Perth, Scotland (UK)?",
-        "newcastle":   "Did you mean Newcastle, UK or Newcastle, New South Wales (Australia)?",
-        "plymouth":    "Did you mean Plymouth, UK or Plymouth, Massachusetts (USA)?",
-        "albany":      "Did you mean Albany, New York (USA) or Albany, Western Australia?",
-        "aurora":      "Did you mean Aurora, Colorado (USA) or Aurora, Ontario (Canada)?",
-    }
-    if not country:
-        for city, question_text in AMBIGUOUS.items():
-            if city in q_lower:
-                return question_text
-
-    # Rule 2 — multi-month range with no geo
-    if ds and de and not country:
-        from datetime import date as _date
-        try:
-            span_days = (_date.fromisoformat(de) - _date.fromisoformat(ds)).days
-        except ValueError:
-            span_days = 0
-        _GEO_WORDS = {"italy", "france", "germany", "spain", "europe", "amazon",
-                      "africa", "asia", "mediterranean", "sahara", "worldwide",
-                      "global", "all", "everywhere", "any"}
-        if span_days > 31 and not any(w in q_lower for w in _GEO_WORDS):
-            return (
-                "Your query covers multiple months but no region was mentioned. "
-                "Which country or region should I focus on? "
-                "(e.g. Italy, Amazon, Mediterranean — or just press Enter for worldwide)"
+    # R3/R5 — no location specified
+    if not has_location:
+        if ds and de:
+            # R5: date range exists but no geo — tailor the message
+            from datetime import date as _date
+            try:
+                span_days = (_date.fromisoformat(de) - _date.fromisoformat(ds)).days
+            except ValueError:
+                span_days = 0
+            if span_days > 31:
+                questions.append(
+                    "  • Which region should I focus on for this multi-month range? "
+                    "(e.g. Italy, Amazon, Mediterranean — or press Enter for worldwide)"
+                )
+            else:
+                questions.append(
+                    "  • Which region? (e.g. France, Amazon basin, Mediterranean, or 'worldwide')"
+                )
+        else:
+            questions.append(
+                "  • Which region? (e.g. France, Amazon basin, Mediterranean, or 'worldwide')"
             )
 
-    return None
+    # R4 — no time period specified
+    if not ds:
+        questions.append(
+            "  • Which time period? (e.g. March 2025, Jan–Jun 2024, or 'all dates')"
+        )
+
+    if not questions:
+        return None
+
+    if len(questions) == 1:
+        # Single issue — return it without a preamble list
+        return questions[0].strip()
+
+    return (
+        "To search precisely I need a few more details:\n" +
+        "\n".join(questions)
+    )
 
 
 def retrieve_and_filter(question, collection, embed_model, top_k=DEFAULT_TOP_K):
@@ -722,15 +878,19 @@ def _parse_display_request(text: str, top_k: int) -> tuple:
 
 
 def _print_results(exact_hits, partial_hits, exact_count, partial_count,
-                   intent, display_exact, display_partial):
-    """Print results directly to terminal from Python — guaranteed accurate output."""
+                   intent, display_exact, display_partial,
+                   exact_offset=0, partial_offset=0):
+    """Print results directly to terminal from Python — guaranteed accurate output.
+
+    exact_offset / partial_offset: skip the first N results (used for pagination).
+    """
     req_start = intent.get("date_start", "")
     req_end   = intent.get("date_end",   "")
     has_dates = bool(req_start and req_end)
 
     if has_dates:
-        shown_exact   = exact_hits[:display_exact]
-        shown_partial = partial_hits[:display_partial]
+        shown_exact   = exact_hits[exact_offset: exact_offset + display_exact]
+        shown_partial = partial_hits[partial_offset: partial_offset + display_partial]
 
         print(f"\n{'─'*56}")
         print(f" EXACT MATCHES — {exact_count:,} total | showing {len(shown_exact)}")
@@ -773,7 +933,7 @@ def _print_results(exact_hits, partial_hits, exact_count, partial_count,
         print(f"{'─'*56}\n")
 
     else:
-        shown = exact_hits[:display_exact]
+        shown = exact_hits[exact_offset: exact_offset + display_exact]
         print(f"\n{'─'*56}")
         print(f" RESULTS — {exact_count:,} total | showing {len(shown)} most relevant")
         print(f"{'─'*56}")
@@ -968,22 +1128,51 @@ def run_chat(args):
     verbose = args.verbose
     top_k   = args.top
 
-    # Single-question mode
+    # Single-question mode (interactive clarification + display loop)
     if args.ask:
-        exact_hits, partial_hits, exact_count, partial_count, intent, clarification = \
-            retrieve_and_filter(args.ask, collection, embed_model, top_k)
-        if verbose:
-            print(f"\n🔍 Intent: {intent}")
-            print(f"   Exact: {exact_count:,} total ({len(exact_hits)} retrieved) | "
-                  f"Partial: {partial_count:,} total ({len(partial_hits)} retrieved)")
+        question = args.ask
+
+        # Step 1 — clarification loop: ask until all fields are known
+        while True:
+            exact_hits, partial_hits, exact_count, partial_count, intent, clarification = \
+                retrieve_and_filter(question, collection, embed_model, top_k)
+            if verbose:
+                print(f"\n🔍 Intent: {intent}")
+                print(f"   Exact: {exact_count:,} total ({len(exact_hits)} retrieved) | "
+                      f"Partial: {partial_count:,} total ({len(partial_hits)} retrieved)")
+                print()
             if clarification:
-                print(f"   Clarification: {clarification}")
-            print()
+                print(f"\n❓ {clarification}")
+                print("   (type your answer, or 'skip' to search anyway)\n> ", end="", flush=True)
+                answer = input().strip()
+                if answer.lower() == "skip" or not answer:
+                    break
+                question = f"{question} {answer}"
+                continue
+            break
+
+        total = exact_count + partial_count
         print(f"\nFound {exact_count:,} exact + {partial_count:,} partial matches.")
-        messages = build_prompt(args.ask, exact_hits, partial_hits, exact_count, partial_count,
+
+        if total == 0:
+            print("   Try broadening your search (wider date range or remove location filter).\n")
+            return
+
+        # Step 2 — ask how many results to display
+        print(f"   How many would you like to see? (1–{min(top_k, total)}, default {DEFAULT_DISPLAY})")
+        print("> ", end="", flush=True)
+        display_answer = input().strip()
+        display_exact, display_partial = _parse_display_request(display_answer, top_k)
+
+        # Step 3 — print actual results from Python (guaranteed accurate)
+        _print_results(exact_hits, partial_hits, exact_count, partial_count,
+                       intent, display_exact, display_partial)
+
+        # Step 4 — LLM adds a short comment
+        messages = build_prompt(question, exact_hits, partial_hits, exact_count, partial_count,
                                 intent, [],
-                                display_exact=DEFAULT_DISPLAY, display_partial=DEFAULT_DISPLAY,
-                                clarification=clarification)
+                                display_exact=display_exact, display_partial=display_partial,
+                                clarification=None)
         response = ollama.chat(
             model=current_model,
             messages=messages,
@@ -1108,6 +1297,10 @@ def run_chat(args):
 
             # Save as last_results so user can ask for more without re-searching
             last_results = pd
+            last_results["exact_offset"]         = 0
+            last_results["partial_offset"]       = 0
+            last_results["last_display_exact"]   = display_exact
+            last_results["last_display_partial"] = display_partial
 
             tip = _suggest_refinement(pd["intent"], pd["exact_count"], pd["partial_count"])
             if tip:
@@ -1125,20 +1318,40 @@ def run_chat(args):
             pending_clarification = None
             search_question = original_q if user_input.lower() in ("skip", "no", "") \
                               else f"{original_q} {user_input}"
-        # ── Refinement of previous results — no new search needed ──────────────
+        # ── Refinement of previous results ─────────────────────────────────────
         elif _is_refinement(user_input, last_results):
             lr = last_results
-            display_exact, display_partial = _parse_display_request(user_input, top_k)
 
-            if verbose:
-                print(f"\n🔍 Reusing last results — showing {display_exact} exact, {display_partial} partial")
-
-            # Print results from Python directly
-            _print_results(
-                lr["exact_hits"], lr["partial_hits"],
-                lr["exact_count"], lr["partial_count"],
-                lr["intent"], display_exact, display_partial,
+            # If refinement adds a NEW country/satellite filter → re-search
+            combined_q  = f"{lr['search_question']} {user_input}"
+            new_intent  = parse_intent(combined_q)
+            old_intent  = lr["intent"]
+            adds_filter = (
+                (new_intent.get("country") and new_intent.get("country") != old_intent.get("country")) or
+                (new_intent.get("satellite") and new_intent.get("satellite") != old_intent.get("satellite"))
             )
+            if adds_filter:
+                search_question = combined_q
+                # fall through to the RAG pipeline below
+            else:
+                # Pure display refinement — reuse cached results, advance pagination
+                display_exact, display_partial = _parse_display_request(user_input, top_k)
+                is_more = any(p in user_input.lower() for p in ("more", "next", "other", "different"))
+                exact_offset   = (lr.get("exact_offset",   0) + lr.get("last_display_exact",   display_exact)) if is_more else 0
+                partial_offset = (lr.get("partial_offset", 0) + lr.get("last_display_partial", display_partial)) if is_more else 0
+                # Clamp offsets to available results
+                exact_offset   = min(exact_offset,   max(0, len(lr["exact_hits"])   - 1))
+                partial_offset = min(partial_offset, max(0, len(lr["partial_hits"]) - 1))
+
+                if verbose:
+                    print(f"\n🔍 Reusing last results — exact offset {exact_offset}, partial offset {partial_offset}")
+
+                _print_results(
+                    lr["exact_hits"], lr["partial_hits"],
+                    lr["exact_count"], lr["partial_count"],
+                    lr["intent"], display_exact, display_partial,
+                    exact_offset=exact_offset, partial_offset=partial_offset,
+                )
 
             messages = build_prompt(
                 lr["search_question"],
@@ -1160,6 +1373,11 @@ def run_chat(args):
                 continue
 
             print(f"Assistant: {answer}\n")
+            # Update pagination offsets so next "show more" continues from here
+            last_results["exact_offset"]        = exact_offset
+            last_results["partial_offset"]      = partial_offset
+            last_results["last_display_exact"]  = display_exact
+            last_results["last_display_partial"] = display_partial
             history.append({"role": "user",      "content": user_input})
             history.append({"role": "assistant", "content": answer})
             if len(history) > HISTORY_TURNS * 2:
