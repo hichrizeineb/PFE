@@ -115,6 +115,9 @@ SATELLITE_MISSION_SYNONYMS = {
     "land cover":        "S2",
     "forest":            "S2",
     "forests":           "S2",
+    "deforestation":     "S2",
+    "reforestation":     "S2",
+    "tree cover":        "S2",
     "wildfire":          "S2",
     "fire":              "S2",   # burn scar and active fire mapping
     "inland waterways":  "S2",
@@ -465,7 +468,8 @@ def parse_intent(question: str) -> dict:
                 satellite = SATELLITE_MISSION_SYNONYMS[kw]
                 break
     if satellite is None:
-        # Fuzzy pass — try each word (and bigram) against long SATELLITE_CODES keys
+        # Fuzzy pass A — try words/bigrams against long SATELLITE_CODES keys
+        # (catches typos like "sentinal-2")
         _long_codes = [k for k in SATELLITE_CODES if len(k) >= 6]
         _words = q.split()
         _candidates = _words + [f"{_words[i]} {_words[i+1]}" for i in range(len(_words) - 1)]
@@ -474,7 +478,22 @@ def parse_intent(question: str) -> dict:
                 continue
             hits = get_close_matches(cand, _long_codes, n=1, cutoff=0.82)
             if hits:
-                satellite = SATELLITE_CODES[hits[0]]
+                matched_code = hits[0]
+                if any(c.isdigit() for c in matched_code) and not any(c.isdigit() for c in cand):
+                    continue
+                satellite = SATELLITE_CODES[matched_code]
+                break
+
+    if satellite is None:
+        # Fuzzy pass B — try words/bigrams against long SATELLITE_MISSION_SYNONYMS keys
+        # (catches typos like "deforesation" → "deforestation" → S2)
+        _long_synonyms = [k for k in SATELLITE_MISSION_SYNONYMS if len(k) >= 4]
+        for cand in _candidates:
+            if len(cand) < 4:
+                continue
+            hits = get_close_matches(cand, _long_synonyms, n=1, cutoff=0.82)
+            if hits:
+                satellite = SATELLITE_MISSION_SYNONYMS[hits[0]]
                 break
 
     date_start, date_end = _parse_dates(question)
