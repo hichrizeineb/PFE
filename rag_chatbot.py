@@ -1161,8 +1161,14 @@ def run_chat(args):
 
     current_model = args.model or pick_default_model(models)
     if current_model not in models:
-        print(f"⚠️  Model '{current_model}' not found. Using '{models[0]}' instead.")
-        current_model = models[0]
+        # Try partial match: "mistral" → "mistral:latest", "llama3" → "llama3:latest"
+        matches = [m for m in models if current_model.lower() in m.lower()]
+        if matches:
+            current_model = matches[0]
+        else:
+            print(f"⚠️  Model '{current_model}' not found. Available: {models}")
+            print(f"   Using '{models[0]}' instead.")
+            current_model = models[0]
 
     print(f"\n✅ Using model: {current_model}")
 
