@@ -1,0 +1,12 @@
+{
+  "providers_attempted": 66,
+  "providers_crawled": 66,
+  "providers_failed": 0,
+  "collections_total": 198,
+  "items_sampled": 223,
+  "rag_docs_written": 198,
+  "errors_total": 5,
+  "start_ts": "2026-04-30T13:24:17Z",
+  "end_ts": "2026-04-30T13:31:48Z",
+  "output_dir": "/home/zhich/dataionics_rag/kb/outputs"
+}
