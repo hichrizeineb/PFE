@@ -5,3 +5,6 @@ requests>=2.32.0
 dateparser>=1.2.0
 geopy>=2.4.0
 pydantic>=2.7.0
+ollama>=0.4.0
+chromadb>=0.5.0
+redis>=4.0.0          # optional — only needed for session persistence (--session flag)

@@ -27,18 +27,38 @@ The bot:
 
 ## Architecture
 
+### v1 (original — preserved, do not delete)
 ```
 generate_queries.py
     ↓ kb/Search_queries_world.json  (~421k entries)
 
 processor_standalone.py
-    ↓ kb/outputs/documents_embedding.jsonl
+    ↓ kb/outputs/documents_embedding.jsonl  (421k docs)
 
 embed_and_load.py
-    ↓ chroma_db/  (ChromaDB, collection: copernicus_rag)
+    ↓ chroma_db/  (collection: copernicus_rag, 421k docs)
 
-rag_chatbot.py  ←  you talk to this
-    parse_intent() → ChromaDB filters → Ollama (mistral)
+rag_chatbot.py  ←  hardcoded parse_intent() → ChromaDB → Ollama
+```
+
+### v2 (grouped, LLM-enriched — active)
+```
+collection_indexer.py
+    ↓ kb/outputs/collection_index.json        (1,337 collections)
+    ↓ kb/outputs/theme_index.json             (cleaned themes)
+    ↓ kb/outputs/mission_theme_index.json     (curated LLM vocabulary)
+    ↓ kb/outputs/sentinel_collection_map.json (4 missions → providers)
+
+processor_grouped.py  [--enrich]
+    ↓ kb/outputs/documents_embedding.jsonl   (204 grouped docs)
+    ↓ kb/outputs/documents_full.json         (204 docs + geometry + date_range)
+    ↓ kb/outputs/query_groups.json           (20 diverse API samples per group)
+    ↓ kb/enriched_groups/<group_id>.json     (LLM cache, optional)
+
+embed_and_load_grouped.py
+    ↓ chroma_db/  (collection: copernicus_grouped, 204 docs)
+
+rag_chatbot_v2.py  ←  LLM intent extraction → ChromaDB → Ollama synthesis
 ```
 
 ---
@@ -145,22 +165,125 @@ You: show me 5                  → reuses last results, shows 5 of each
 
 ---
 
-## Rebuilding the Database
+## Rebuilding the v1 Database
 
-Only needed when you change `generate_queries.py` or `processor_standalone.py`.  
-**Do NOT rebuild just to change chatbot behaviour** — edit `rag_chatbot.py` directly.
+Only needed when you change `generate_queries.py` or `processor_standalone.py`.
 
 ```bash
 python generate_queries.py          # ~20 min — regenerates Search_queries_world.json
 python processor_standalone.py      # ~5 min  — regenerates documents_embedding.jsonl
-python embed_and_load.py            # ~35 min — reloads ChromaDB
+python embed_and_load.py            # ~35 min — reloads ChromaDB (copernicus_rag)
 ```
 
-| File changed | generate | process | embed |
-|---|---|---|---|
-| `rag_chatbot.py` | ❌ | ❌ | ❌ |
-| `processor_standalone.py` | ❌ | ✅ | ✅ |
-| `generate_queries.py` | ✅ | ✅ | ✅ |
+---
+
+## v2 Pipeline — Build and Enrichment
+
+### Required env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENRICH_INDEX` | `0` | Set to `1` to enable LLM enrichment |
+| `ENRICH_MODEL` | `mistral` | Ollama model to use for enrichment |
+
+### Run index build WITHOUT enrichment (current behavior preserved)
+
+```bash
+python3 collection_indexer.py       # rebuild collection indexes
+python3 processor_grouped.py        # rebuild 204 grouped documents
+python3 embed_and_load_grouped.py   # rebuild ChromaDB copernicus_grouped
+```
+
+### Run index build WITH LLM enrichment
+
+```bash
+python3 collection_indexer.py
+python3 processor_grouped.py --enrich          # calls Ollama for each of 204 groups
+python3 embed_and_load_grouped.py              # merges enriched text automatically
+```
+
+Or via environment variable:
+
+```bash
+ENRICH_INDEX=1 python3 processor_grouped.py
+ENRICH_MODEL=llama3 ENRICH_INDEX=1 python3 processor_grouped.py
+```
+
+### Force re-enrichment (ignore cache)
+
+```bash
+python3 processor_grouped.py --enrich --force-enrich
+# or enrich a single group:
+python3 enricher.py --group S1_urban_europe --force
+```
+
+### Enrichment cache
+
+Cached enrichment JSON files are stored in `kb/enriched_groups/<group_id>.json`.
+
+Each cache file contains:
+```json
+{
+  "group_id": "S1_urban_europe",
+  "input_hash": "abc123...",
+  "prompt_version": "v1",
+  "model_name": "mistral",
+  "enriched_at": "2026-04-29T10:00:00Z",
+  "enrichment": {
+    "group_title": "Sentinel-1 urban monitoring in Europe",
+    "enriched_description": "...",
+    "normalized_themes": [...],
+    "synonyms": [...],
+    "contains_bullets": [...],
+    "example_questions": [...]
+  }
+}
+```
+
+Re-runs with `--enrich` only call the LLM again if:
+- No cache file exists for that group, OR
+- The `input_hash` changed (source data updated), OR
+- `--force-enrich` is passed
+
+### Run retrieval evaluation
+
+```bash
+python3 eval_retrieval.py           # 10 queries, top-3, writes report to reports/
+python3 eval_retrieval.py --top 5   # show top-5 per query
+python3 eval_retrieval.py --no-report  # print only
+```
+
+Reports are written to `reports/eval_YYYYMMDD_HHMMSS.json`.
+
+---
+
+## Architecture Decision — LangGraph
+
+LangGraph is **not used** and should not be added unless the query-time workflow
+becomes stateful and requires:
+
+- Routing between multiple retrieval strategies
+- Confidence evaluation + retry loops
+- Crawler update orchestration
+- Human-in-the-loop validation
+- Stateful multi-step workflows
+
+If the flow remains `retrieve → synthesise`, LangChain + ChromaDB is sufficient.
+
+---
+
+## Known Limitations
+
+- Enrichment requires a local Ollama instance with a pulled model (`ollama pull mistral`)
+- Enrichment for all 204 groups takes ~30–60 min depending on model and hardware
+- LLM enrichment quality depends on the model; mistral works well for this task
+- `copernicus_rag` (v1, 421k docs) is preserved but not used by the v2 chatbot
+
+## Next Steps
+
+- `rag_chatbot_v2.py` — LLM intent extraction (JSON mode) → `copernicus_grouped` → synthesis
+- LangChain query-time chain (Option B): query rewriting → ChromaDB → re-ranking → synthesis
+- Crawler integration: dynamic data ingestion with `input_hash`-based change detection
 
 ---
 

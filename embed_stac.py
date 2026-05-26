@@ -78,10 +78,12 @@ def flatten_metadata(meta: dict) -> dict:
         elif isinstance(v, (int, float)):
             flat[k] = v
         elif isinstance(v, list):
-            flat[k] = ", ".join(
-                str(x) for x in v
-                if not isinstance(x, (dict, list))
-            )
+            # Nested lists/dicts (e.g. extent_spatial, extent_temporal) must be
+            # stored as JSON strings so they stay parseable at query time.
+            if any(isinstance(x, (list, dict)) for x in v):
+                flat[k] = json.dumps(v, ensure_ascii=False)
+            else:
+                flat[k] = ", ".join(str(x) for x in v)
         elif isinstance(v, dict):
             # Skip nested dicts — not representable as a flat value
             continue
@@ -108,13 +110,21 @@ def main() -> None:
         )
 
     documents: list[dict] = []
+    skipped = 0
     with open(input_path, encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 documents.append(json.loads(line))
+            except json.JSONDecodeError:
+                print(f"  WARNING: skipping corrupt line {lineno} (truncated by interrupted crawl)")
+                skipped += 1
 
     print(f"\nLoaded {len(documents):,} documents from {input_path}")
+    if skipped:
+        print(f"  Skipped {skipped} corrupt lines")
 
     if not documents:
         raise SystemExit("No documents found — nothing to embed.")
